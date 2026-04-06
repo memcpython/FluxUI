@@ -42,6 +42,10 @@ export interface FluxUIWindowOptions {
    */
   readonly closable?: boolean;
   /**
+   * Enables resizing from the bottom-right corner.
+   */
+  readonly resizable?: boolean;
+  /**
    * Hides the title bar while keeping the window body and clipping behavior.
    */
   readonly titleBar?: boolean;

@@ -15,8 +15,10 @@ and custom render loops.
 
 - Immediate-mode API: `beginFrame()`, call widgets, `endFrame()`
 - Stable hot / active / focus handling
+- Keyboard focus navigation and activation for interactive widgets
 - Scope-aware widget IDs with `pushId()` / `popId()`
 - Vertical and horizontal flow layouts
+- Floating windows with dragging, scrolling, resize grips, z-order, and open/close animation
 - Renderer abstraction with a Canvas 2D implementation
 - No framework dependency
 - Strict TypeScript types
@@ -40,19 +42,36 @@ const renderer = new Canvas2DRenderer(context);
 let speed = 5;
 let enabled = true;
 let name = "Pilot";
+let toolsOpen = true;
 
 function frame(input: UIInput): void {
   ui.beginFrame(input);
 
-  ui.label("FluxUI Demo");
+  const tools = ui.beginWindow("FluxUI Demo", {
+    x: 24,
+    y: 24,
+    width: 320,
+    height: 220,
+    open: toolsOpen,
+    closable: true,
+    resizable: true,
+    scrollable: true
+  });
 
-  if (ui.button("Click me")) {
-    console.log("clicked");
+  if (tools.visible) {
+    ui.label("Tools");
+
+    if (ui.button("Click me")) {
+      console.log("clicked");
+    }
+
+    enabled = ui.checkbox("Enabled", enabled);
+    speed = ui.sliderFloat("Speed", speed, 0, 10);
+    name = ui.inputText("Name", name);
   }
 
-  enabled = ui.checkbox("Enabled", enabled);
-  speed = ui.sliderFloat("Speed", speed, 0, 10);
-  name = ui.inputText("Name", name);
+  ui.endWindow();
+  toolsOpen = tools.open;
 
   ui.endFrame(renderer);
 }
@@ -67,6 +86,8 @@ interface UIInput {
   mouseX: number;
   mouseY: number;
   mouseDown: boolean;
+  scrollX?: number;
+  scrollY?: number;
   keysDown?: readonly string[];
   keysPressed?: readonly string[];
   keysReleased?: readonly string[];
@@ -116,6 +137,49 @@ ui.button("Eraser");
 ui.endLayout();
 ```
 
+## Windows
+
+FluxUI windows are still immediate-mode: call `beginWindow()` every frame, build
+the contents, then always call `endWindow()`.
+
+```ts
+const inspector = ui.beginWindow("Inspector", {
+  x: 420,
+  y: 24,
+  width: 280,
+  height: 320,
+  open: inspectorOpen,
+  closable: true,
+  resizable: true,
+  scrollable: true
+});
+
+if (inspector.visible) {
+  ui.label("Selected Entity");
+  ui.inputText("Name", entityName);
+}
+
+ui.endWindow();
+inspectorOpen = inspector.open;
+```
+
+Windows support:
+
+- Dragging from the title bar
+- Mouse wheel scrolling and draggable scroll thumbs
+- Resize grips in the bottom-right corner
+- Z-order activation when clicked
+- Animated open and close transitions
+
+## Keyboard Input
+
+Interactive widgets participate in keyboard focus order automatically.
+
+- `Tab` and `Shift+Tab` move focus
+- `Enter` and `Space` activate buttons and checkboxes
+- Arrow keys, `PageUp`, `PageDown`, `Home`, and `End` adjust focused sliders
+- Text inputs consume `typedText`, `Backspace`, `Escape`, and `Enter`
+
 ## Renderer
 
 The core only depends on a small renderer interface:
@@ -132,11 +196,15 @@ interface UIRenderer {
     thickness: number,
     color: string
   ): void;
+  pushClipRect?(x: number, y: number, width: number, height: number): void;
+  popClipRect?(): void;
   measureText?(text: string, font: string): number;
 }
 ```
 
-If `measureText()` is missing, FluxUI falls back to a simple width estimate.
+If `measureText()` is missing, FluxUI falls back to a simple width estimate. If
+clip methods are missing, window contents still render, but renderer-side
+clipping is skipped.
 
 ## Development
 
@@ -162,4 +230,5 @@ tests/
 
 FluxUI is a compact core library, not a full editor UI framework. The current
 focus is correctness and ergonomics in the immediate-mode core: stable IDs,
-predictable interaction ownership, and renderer independence.
+predictable interaction ownership, keyboard-driven control flow, and renderer
+independence.

@@ -126,12 +126,14 @@ interface WindowFrame {
   readonly closable: boolean;
   readonly movable: boolean;
   readonly scrollable: boolean;
+  readonly resizable: boolean;
   readonly geometry: WindowGeometry;
   readonly scrollY: number;
   readonly commands: DrawCommand[];
   readonly closeRect?: UIRect;
   readonly closeBackgroundColor?: string;
   readonly closeColor?: string;
+  readonly resizeGripRect?: UIRect;
   readonly windowVisual: WidgetVisualState;
 }
 
@@ -150,6 +152,8 @@ export class FluxUI {
   private readonly idStack: number[] = [0x811c9dc5];
   private readonly idOccurrences = new Map<number, number>();
   private readonly previousKeys = new Set<string>();
+  private readonly previousFocusableIds: number[] = [];
+  private readonly focusableIds: number[] = [];
   private readonly seenWidgetIds = new Set<number>();
   private readonly seenWindowIds = new Set<number>();
   private readonly visualStates = new Map<number, WidgetVisualState>();
@@ -174,6 +178,13 @@ export class FluxUI {
   private nextWindowZ = 1;
   private windowDragOffsetX = 0;
   private windowDragOffsetY = 0;
+  private windowResizeStartWidth = 0;
+  private windowResizeStartHeight = 0;
+  private windowResizeStartMouseX = 0;
+  private windowResizeStartMouseY = 0;
+  private windowScrollbarGrabOffsetY = 0;
+  private pendingFocusId = 0;
+  private activeWindowMode: "none" | "move" | "resize" | "scrollbar" = "none";
 
   constructor(options: FluxUIOptions = {}) {
     this.origin = options.origin ?? { x: 16, y: 16 };
@@ -193,6 +204,7 @@ export class FluxUI {
     this.idStack.length = 1;
     this.idStack[0] = 0x811c9dc5;
     this.idOccurrences.clear();
+    this.focusableIds.length = 0;
     this.seenWidgetIds.clear();
     this.seenWindowIds.clear();
     this.pendingWindows.length = 0;
@@ -201,6 +213,7 @@ export class FluxUI {
     this.input = this.normalizeInput(input);
     this.deltaTime = this.input.deltaTime;
     this.timeSeconds += this.deltaTime;
+    this.pendingFocusId = this.resolvePendingFocusId();
     this.hoveredWindowId = this.findHoveredWindowId(this.input.mouseX, this.input.mouseY);
     this.topWindowId = this.findTopWindowId();
     this.layoutStack.push(
@@ -221,6 +234,10 @@ export class FluxUI {
         this.emitWindow(renderer, window);
       }
 
+      if (this.input.mousePressed && this.hotId === 0) {
+        this.focusedId = 0;
+      }
+
       if (this.activeId !== 0 && (this.input.mouseReleased || !this.seenWidgetIds.has(this.activeId))) {
         this.activeId = 0;
       }
@@ -237,6 +254,9 @@ export class FluxUI {
       for (const key of this.input.keysDown) {
         this.previousKeys.add(key);
       }
+
+      this.previousFocusableIds.length = 0;
+      this.previousFocusableIds.push(...this.focusableIds);
 
       this.pruneVisualStates();
     } finally {
@@ -335,6 +355,7 @@ export class FluxUI {
     const closable = options.closable ?? false;
     const movable = options.movable ?? titleBar;
     const scrollable = options.scrollable ?? true;
+    const resizable = options.resizable ?? true;
     const padding = options.padding ?? this.style.windowPadding;
 
     let geometry = this.buildWindowGeometry(state, titleBar, padding, scrollable);
@@ -348,6 +369,7 @@ export class FluxUI {
     let closeRect: UIRect | undefined;
     let closeBackgroundColor: string | undefined;
     let closeColor: string | undefined;
+    let resizeGripRect: UIRect | undefined;
     let nextOpen = requestedOpen;
 
     if (closable && titleBar && geometry.titleRect.height > 0) {
@@ -377,6 +399,39 @@ export class FluxUI {
       }
     }
 
+    if (scrollable && geometry.scrollbarRect && geometry.scrollbarThumbRect) {
+      const scrollbarId = this.makeSubId(windowId, "window-scrollbar");
+      this.seenWidgetIds.add(scrollbarId);
+      const thumbHovered = this.updateHotState(
+        scrollbarId,
+        geometry.scrollbarThumbRect,
+        windowId,
+        geometry.rect
+      );
+
+      if (thumbHovered && this.input.mousePressed) {
+        this.activeWindowId = windowId;
+        this.activeWindowMode = "scrollbar";
+        this.windowScrollbarGrabOffsetY = this.input.mouseY - geometry.scrollbarThumbRect.y;
+      }
+
+      if (this.activeWindowId === windowId && this.activeWindowMode === "scrollbar") {
+        if (this.input.mouseDown) {
+          const maxScroll = this.getMaxScroll(state, geometry.contentRect.height);
+          const thumbTravel = Math.max(0, geometry.scrollbarRect.height - geometry.scrollbarThumbRect.height);
+          const thumbTop = clamp(
+            this.input.mouseY - geometry.scrollbarRect.y - this.windowScrollbarGrabOffsetY,
+            0,
+            thumbTravel
+          );
+          state.scrollY = thumbTravel <= 0 ? 0 : (thumbTop / thumbTravel) * maxScroll;
+        } else {
+          this.activeWindowId = 0;
+          this.activeWindowMode = "none";
+        }
+      }
+    }
+
     const titleHovered =
       titleBar &&
       hovered &&
@@ -385,16 +440,18 @@ export class FluxUI {
 
     if (movable && titleHovered && this.input.mousePressed) {
       this.activeWindowId = windowId;
+      this.activeWindowMode = "move";
       this.windowDragOffsetX = this.input.mouseX - state.x;
       this.windowDragOffsetY = this.input.mouseY - state.y;
     }
 
-    if (this.activeWindowId === windowId) {
+    if (this.activeWindowId === windowId && this.activeWindowMode === "move") {
       if (this.input.mouseDown) {
         state.x = this.input.mouseX - this.windowDragOffsetX;
         state.y = this.input.mouseY - this.windowDragOffsetY;
       } else if (this.input.mouseReleased) {
         this.activeWindowId = 0;
+        this.activeWindowMode = "none";
       }
     }
 
@@ -415,6 +472,47 @@ export class FluxUI {
     }
 
     geometry = this.buildWindowGeometry(state, titleBar, padding, scrollable);
+
+    if (resizable && geometry.rect.width > 0 && geometry.rect.height > 0) {
+      const gripSize = Math.min(16, Math.max(12, Math.floor(Math.min(geometry.rect.width, geometry.rect.height) / 4)));
+      resizeGripRect = {
+        x: geometry.rect.x + geometry.rect.width - gripSize,
+        y: geometry.rect.y + geometry.rect.height - gripSize,
+        width: gripSize,
+        height: gripSize
+      };
+      const resizeId = this.makeSubId(windowId, "window-resize");
+      this.seenWidgetIds.add(resizeId);
+      const resizeHovered = this.updateHotState(resizeId, resizeGripRect, windowId, geometry.rect);
+
+      if (resizeHovered && this.input.mousePressed) {
+        this.activeWindowId = windowId;
+        this.activeWindowMode = "resize";
+        this.windowResizeStartWidth = state.width;
+        this.windowResizeStartHeight = state.height;
+        this.windowResizeStartMouseX = this.input.mouseX;
+        this.windowResizeStartMouseY = this.input.mouseY;
+        this.bringWindowToFront(windowId, state);
+      }
+
+      if (this.activeWindowId === windowId && this.activeWindowMode === "resize") {
+        if (this.input.mouseDown) {
+          state.width = Math.max(160, this.windowResizeStartWidth + (this.input.mouseX - this.windowResizeStartMouseX));
+          state.height = Math.max(96, this.windowResizeStartHeight + (this.input.mouseY - this.windowResizeStartMouseY));
+          geometry = this.buildWindowGeometry(state, titleBar, padding, scrollable);
+          resizeGripRect = {
+            x: geometry.rect.x + geometry.rect.width - gripSize,
+            y: geometry.rect.y + geometry.rect.height - gripSize,
+            width: gripSize,
+            height: gripSize
+          };
+        } else {
+          this.activeWindowId = 0;
+          this.activeWindowMode = "none";
+        }
+      }
+    }
+
     hovered = geometry.rect.height > 0 && containsPoint(geometry.rect, this.input.mouseX, this.input.mouseY) && this.canCaptureWindow(windowId);
     const focused = this.topWindowId === windowId;
     const visible = geometry.contentRect.height > 0 && state.openAmount > 0.01;
@@ -446,12 +544,14 @@ export class FluxUI {
       closable,
       movable,
       scrollable,
+      resizable,
       geometry,
       scrollY: state.scrollY,
       commands: [],
       closeRect,
       closeBackgroundColor,
       closeColor,
+      resizeGripRect,
       windowVisual
     };
 
@@ -538,19 +638,25 @@ export class FluxUI {
       this.measureText(displayText) + this.style.horizontalPadding * 2,
       this.style.widgetHeight
     );
+    this.registerFocusable(id);
     const hovered = this.updateHotState(id, rect, this.currentWindowId(), this.currentInteractionClipRect());
-    const pressed = this.handlePress(id, hovered);
-    const active = this.activeId === id && this.input.mouseDown;
-    const visual = this.updateVisualState(id, hovered, active);
+    if (hovered && this.input.mousePressed) {
+      this.focusedId = id;
+    }
+    const focused = this.focusedId === id;
+    const keyboardPressed = focused && this.isActivatePressed();
+    const pressed = this.handlePress(id, hovered) || keyboardPressed;
+    const active = (this.activeId === id && this.input.mouseDown) || keyboardPressed;
+    const visual = this.updateVisualState(id, hovered, active, focused);
     const pulse = this.samplePulse(visual, pressed);
     const pressOffset = Math.round(visual.active * 2);
     let background = mixColors(this.style.buttonColor, this.style.buttonHotColor, easeInOutCubic(visual.hover));
     background = mixColors(background, this.style.buttonActiveColor, easeOutCubic(visual.active));
     background = mixColors(background, this.style.flashColor, pulse * 0.35);
     const borderColor = mixColors(
-      this.style.borderColor,
+      mixColors(this.style.borderColor, this.style.focusColor, visual.focus * 0.45),
       this.style.accentColor,
-      clamp01(Math.max(visual.hover * 0.65, pulse * 0.85))
+      clamp01(Math.max(visual.hover * 0.65, pulse * 0.85, visual.focus * 0.6))
     );
 
     this.queueRect(rect.x, rect.y + pressOffset, rect.width, rect.height, background);
@@ -584,9 +690,15 @@ export class FluxUI {
       this.style.checkboxSize + this.style.horizontalPadding + this.measureText(displayText),
       Math.max(this.style.checkboxSize, this.style.widgetHeight)
     );
+    this.registerFocusable(id);
     const hovered = this.updateHotState(id, rect, this.currentWindowId(), this.currentInteractionClipRect());
-    const nextValue = this.handlePress(id, hovered) ? !value : value;
-    const visual = this.updateVisualState(id, hovered, this.activeId === id && this.input.mouseDown);
+    if (hovered && this.input.mousePressed) {
+      this.focusedId = id;
+    }
+    const focused = this.focusedId === id;
+    const toggled = this.handlePress(id, hovered) || (focused && this.isActivatePressed());
+    const nextValue = toggled ? !value : value;
+    const visual = this.updateVisualState(id, hovered, this.activeId === id && this.input.mouseDown, focused);
     const pulse = this.samplePulse(visual, nextValue !== value);
     const checkT = this.animateValue(visual, nextValue ? 1 : 0);
     const boxRect: UIRect = {
@@ -605,7 +717,11 @@ export class FluxUI {
     );
     this.queueRectOutline(
       boxRect,
-      mixColors(this.style.borderColor, this.style.accentColor, clamp01(checkT * 0.7 + visual.hover * 0.6))
+      mixColors(
+        mixColors(this.style.borderColor, this.style.focusColor, visual.focus * 0.45),
+        this.style.accentColor,
+        clamp01(checkT * 0.7 + visual.hover * 0.6 + visual.focus * 0.35)
+      )
     );
 
     if (checkT > 0.001) {
@@ -648,12 +764,16 @@ export class FluxUI {
     const { displayText, idText } = this.splitLabel(label);
     const id = this.nextWidgetId("sliderFloat", idText);
     const rect = this.allocateRect(this.style.sliderWidth, this.style.widgetHeight);
+    this.registerFocusable(id);
     const hovered = this.updateHotState(id, rect, this.currentWindowId(), this.currentInteractionClipRect());
     let nextValue = clamp(value, min, max);
 
     if (hovered && this.input.mousePressed) {
       this.activeId = id;
+      this.focusedId = id;
     }
+
+    const focused = this.focusedId === id;
 
     if (this.activeId === id) {
       if (this.input.mouseDown) {
@@ -664,8 +784,12 @@ export class FluxUI {
       }
     }
 
+    if (focused && this.activeId !== id) {
+      nextValue = this.applySliderKeyboardInput(nextValue, min, max);
+    }
+
     const normalized = max === min ? 0 : (nextValue - min) / (max - min);
-    const visual = this.updateVisualState(id, hovered, this.activeId === id && this.input.mouseDown);
+    const visual = this.updateVisualState(id, hovered, this.activeId === id && this.input.mouseDown, focused);
     const displayedValue = this.animateValue(
       visual,
       normalized,
@@ -675,9 +799,9 @@ export class FluxUI {
     const fillWidth = rect.width * displayedValue;
     const handleX = rect.x + fillWidth;
     const borderColor = mixColors(
-      this.style.borderColor,
+      mixColors(this.style.borderColor, this.style.focusColor, visual.focus * 0.45),
       this.style.accentColor,
-      clamp01(visual.hover * 0.55 + visual.active * 0.7 + pulse * 0.45)
+      clamp01(visual.hover * 0.55 + visual.active * 0.7 + pulse * 0.45 + visual.focus * 0.35)
     );
     const fillColor = mixColors(this.style.accentColor, this.style.flashColor, pulse * 0.25);
 
@@ -709,6 +833,7 @@ export class FluxUI {
     const { displayText, idText } = this.splitLabel(label);
     const id = this.nextWidgetId("inputText", idText);
     const rect = this.allocateRect(this.style.inputWidth, this.style.widgetHeight);
+    this.registerFocusable(id);
     const hovered = this.updateHotState(id, rect, this.currentWindowId(), this.currentInteractionClipRect());
     let nextValue = value;
 
@@ -718,7 +843,9 @@ export class FluxUI {
       this.focusedId = 0;
     }
 
-    if (this.focusedId === id) {
+    const focused = this.focusedId === id;
+
+    if (focused) {
       if (this.input.typedText.length > 0) {
         nextValue += this.input.typedText;
       }
@@ -732,8 +859,8 @@ export class FluxUI {
       }
     }
 
-    const visual = this.updateVisualState(id, hovered, false, this.focusedId === id);
-    const contentReveal = this.animateAux(visual, this.focusedId === id ? 1 : 0, this.style.hoverAnimationRate);
+    const visual = this.updateVisualState(id, hovered, false, focused);
+    const contentReveal = this.animateAux(visual, focused ? 1 : 0, this.style.hoverAnimationRate);
     const blink = easeInOutCubic(blinkWave(this.timeSeconds, this.style.caretBlinkRate));
     const caretAlpha = clamp01(contentReveal * blink);
     const panelColor = mixColors(
@@ -757,7 +884,7 @@ export class FluxUI {
       this.style.textColor
     );
 
-    if (this.focusedId === id && caretAlpha > 0.01) {
+    if (focused && caretAlpha > 0.01) {
       const caretX =
         rect.x +
         this.style.horizontalPadding +
@@ -907,6 +1034,84 @@ export class FluxUI {
     }
 
     return clamp(deltaTime, 0, 0.25);
+  }
+
+  private resolvePendingFocusId(): number {
+    if (!this.input.keysPressed.has("Tab") || this.previousFocusableIds.length === 0) {
+      return 0;
+    }
+
+    const reverse = this.input.keysDown.has("Shift");
+    const currentIndex = this.previousFocusableIds.indexOf(this.focusedId);
+
+    if (currentIndex < 0) {
+      return reverse
+        ? this.previousFocusableIds[this.previousFocusableIds.length - 1] ?? 0
+        : this.previousFocusableIds[0] ?? 0;
+    }
+
+    if (reverse) {
+      const nextIndex =
+        currentIndex === 0 ? this.previousFocusableIds.length - 1 : currentIndex - 1;
+      return this.previousFocusableIds[nextIndex] ?? 0;
+    }
+
+    const nextIndex = (currentIndex + 1) % this.previousFocusableIds.length;
+    return this.previousFocusableIds[nextIndex] ?? 0;
+  }
+
+  private registerFocusable(id: number): void {
+    this.focusableIds.push(id);
+
+    if (this.pendingFocusId === id) {
+      this.focusedId = id;
+      this.pendingFocusId = 0;
+    }
+  }
+
+  private isActivatePressed(): boolean {
+    return (
+      this.input.keysPressed.has("Enter") ||
+      this.input.keysPressed.has("Space") ||
+      this.input.keysPressed.has(" ")
+    );
+  }
+
+  private applySliderKeyboardInput(value: number, min: number, max: number): number {
+    const range = max - min;
+    if (range <= 0) {
+      return min;
+    }
+
+    const step = Math.max(range / 100, 0.01);
+    const pageStep = Math.max(range / 10, step);
+    let nextValue = value;
+
+    if (this.input.keysPressed.has("ArrowLeft") || this.input.keysPressed.has("ArrowDown")) {
+      nextValue -= step;
+    }
+
+    if (this.input.keysPressed.has("ArrowRight") || this.input.keysPressed.has("ArrowUp")) {
+      nextValue += step;
+    }
+
+    if (this.input.keysPressed.has("PageDown")) {
+      nextValue -= pageStep;
+    }
+
+    if (this.input.keysPressed.has("PageUp")) {
+      nextValue += pageStep;
+    }
+
+    if (this.input.keysPressed.has("Home")) {
+      nextValue = min;
+    }
+
+    if (this.input.keysPressed.has("End")) {
+      nextValue = max;
+    }
+
+    return clamp(nextValue, min, max);
   }
 
   private getVisualState(id: number): WidgetVisualState {
@@ -1379,8 +1584,17 @@ export class FluxUI {
         geometry.scrollbarThumbRect.y,
         geometry.scrollbarThumbRect.width,
         geometry.scrollbarThumbRect.height,
-        this.style.windowScrollbarColor
+        mixColors(this.style.windowScrollbarColor, this.style.accentColor, window.windowVisual.focus * 0.3)
       );
+    }
+
+    if (window.resizable && window.resizeGripRect) {
+      const gripColor = mixColors(this.style.borderColor, this.style.accentColor, window.windowVisual.focus * 0.35);
+      const right = window.resizeGripRect.x + window.resizeGripRect.width - 2;
+      const bottom = window.resizeGripRect.y + window.resizeGripRect.height - 2;
+      renderer.drawLine(right - 4, bottom, right, bottom - 4, 1, gripColor);
+      renderer.drawLine(right - 8, bottom, right, bottom - 8, 1, gripColor);
+      renderer.drawLine(right - 12, bottom, right, bottom - 12, 1, gripColor);
     }
   }
 

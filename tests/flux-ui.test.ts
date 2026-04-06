@@ -349,4 +349,95 @@ describe("FluxUI", () => {
     expect(renderer.rects).toHaveLength(1);
     expect(renderer.texts).toContain("Dummy");
   });
+
+  it("supports keyboard focus navigation and activation across controls", () => {
+    const ui = new FluxUI({ origin: { x: 0, y: 0 } });
+    const renderer = new MockRenderer();
+    let clicked = false;
+    let checked = false;
+    let speed = 5;
+
+    const draw = (keysPressed: string[] = [], keysDown: string[] = []): void => {
+      ui.beginFrame({ mouseX: -50, mouseY: -50, mouseDown: false, keysPressed, keysDown });
+      if (ui.button("Primary")) {
+        clicked = true;
+      }
+      checked = ui.checkbox("Enabled", checked);
+      speed = ui.sliderFloat("Speed", speed, 0, 10);
+      ui.endFrame(renderer);
+    };
+
+    draw();
+    draw(["Tab"]);
+    draw(["Enter"]);
+    draw(["Tab"]);
+    draw(["Space"]);
+    draw(["Tab"]);
+    draw(["ArrowRight"]);
+
+    expect(clicked).toBe(true);
+    expect(checked).toBe(true);
+    expect(speed).toBeGreaterThan(5);
+  });
+
+  it("resizes windows from the bottom-right grip", () => {
+    const ui = new FluxUI({ origin: { x: 0, y: 0 } });
+    const renderer = new MockRenderer();
+
+    ui.beginFrame({ mouseX: -1, mouseY: -1, mouseDown: false });
+    const first = ui.beginWindow("Tools", { x: 20, y: 20, width: 220, height: 140, resizable: true });
+    ui.label("Body");
+    ui.endWindow();
+    ui.endFrame(renderer);
+
+    const gripX = first.rect.x + first.rect.width - 2;
+    const gripY = first.rect.y + first.rect.height - 2;
+
+    ui.beginFrame({ mouseX: gripX, mouseY: gripY, mouseDown: true });
+    ui.beginWindow("Tools", { resizable: true });
+    ui.label("Body");
+    ui.endWindow();
+    ui.endFrame(renderer);
+
+    ui.beginFrame({ mouseX: gripX + 48, mouseY: gripY + 36, mouseDown: true });
+    const resized = ui.beginWindow("Tools", { resizable: true });
+    ui.label("Body");
+    ui.endWindow();
+    ui.endFrame(renderer);
+
+    expect(resized.rect.width).toBeGreaterThan(first.rect.width);
+    expect(resized.rect.height).toBeGreaterThan(first.rect.height);
+  });
+
+  it("drags window scrollbars to move overflowing content", () => {
+    const ui = new FluxUI({ origin: { x: 0, y: 0 } });
+    const renderer = new MockRenderer();
+
+    const drawWindow = (mouseX: number, mouseY: number, mouseDown: boolean) => {
+      ui.beginFrame({ mouseX, mouseY, mouseDown });
+      const handle = ui.beginWindow("Log", {
+        x: 20,
+        y: 20,
+        width: 220,
+        height: 140,
+        scrollable: true
+      });
+      for (let index = 0; index < 24; index += 1) {
+        ui.label(`Entry ${index}`);
+      }
+      ui.endWindow();
+      ui.endFrame(renderer);
+      return handle;
+    };
+
+    drawWindow(-1, -1, false);
+    const settled = drawWindow(-1, -1, false);
+    const scrollbarX = settled.contentRect.x + settled.contentRect.width + 5;
+    const thumbY = settled.contentRect.y + 6;
+
+    drawWindow(scrollbarX, thumbY, true);
+    const dragged = drawWindow(scrollbarX, thumbY + 40, true);
+
+    expect(dragged.scrollY).toBeGreaterThan(0);
+  });
 });
