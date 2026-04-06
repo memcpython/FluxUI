@@ -36,6 +36,29 @@ export interface LineDrawCommand {
 }
 
 /**
+ * Pushes a rectangular clip region.
+ */
+export interface ClipPushDrawCommand {
+  readonly kind: "clipPush";
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+/**
+ * Pops the current clip region.
+ */
+export interface ClipPopDrawCommand {
+  readonly kind: "clipPop";
+}
+
+/**
  * A renderer command recorded during a single frame.
  */
-export type DrawCommand = RectDrawCommand | TextDrawCommand | LineDrawCommand;
+export type DrawCommand =
+  | RectDrawCommand
+  | TextDrawCommand
+  | LineDrawCommand
+  | ClipPushDrawCommand
+  | ClipPopDrawCommand;

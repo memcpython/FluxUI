@@ -15,6 +15,14 @@ export interface UIInput {
    */
   readonly mouseDown: boolean;
   /**
+   * Horizontal scroll delta for this frame.
+   */
+  readonly scrollX?: number;
+  /**
+   * Vertical scroll delta for this frame.
+   */
+  readonly scrollY?: number;
+  /**
    * Keys that are currently held this frame.
    */
   readonly keysDown?: readonly string[];
@@ -26,6 +34,10 @@ export interface UIInput {
    * Keys that transitioned to the released state this frame.
    */
   readonly keysReleased?: readonly string[];
+  /**
+   * Frame delta time in seconds. Defaults to 1 / 60 when omitted.
+   */
+  readonly deltaTime?: number;
   /**
    * Text typed during this frame, already processed by the host platform.
    */

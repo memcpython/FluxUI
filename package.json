@@ -25,6 +25,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
+    "test:stress": "vitest run tests/flux-ui.stress.test.ts tests/flux-ui.misuse.test.ts",
     "test:watch": "vitest"
   },
   "devDependencies": {

@@ -22,6 +22,14 @@ export interface UIRenderer {
     color: string
   ): void;
   /**
+   * Optionally pushes a clip rectangle for subsequent draw operations.
+   */
+  pushClipRect?(x: number, y: number, width: number, height: number): void;
+  /**
+   * Optionally pops the most recent clip rectangle.
+   */
+  popClipRect?(): void;
+  /**
    * Optionally measures text width. FluxUI falls back to an approximation when absent.
    */
   measureText?(text: string, font: string): number;

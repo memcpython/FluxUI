@@ -61,6 +61,23 @@ export class Canvas2DRenderer implements UIRenderer {
   /**
    * @inheritdoc
    */
+  public pushClipRect(x: number, y: number, width: number, height: number): void {
+    this.context.save();
+    this.context.beginPath();
+    this.context.rect(x, y, width, height);
+    this.context.clip();
+  }
+
+  /**
+   * @inheritdoc
+   */
+  public popClipRect(): void {
+    this.context.restore();
+  }
+
+  /**
+   * @inheritdoc
+   */
   public measureText(text: string, font: string): number {
     this.context.font = font;
     return this.context.measureText(text).width;

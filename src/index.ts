@@ -1,4 +1,9 @@
-export { FluxUI, type FluxUIOptions, type FluxUIPoint } from "./flux-ui.js";
+export {
+  FluxUI,
+  type FluxUIOptions,
+  type FluxUIPoint,
+  type FluxUIDebugState
+} from "./flux-ui.js";
 export { Canvas2DRenderer } from "./renderers/canvas2d-renderer.js";
 export type { UIRenderer } from "./renderers/ui-renderer.js";
 export type { UIInput } from "./core/types.js";
